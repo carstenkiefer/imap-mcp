@@ -3,9 +3,9 @@
 A small [Model Context Protocol](https://modelcontextprotocol.io) server that lets an AI assistant read your IMAP mailboxes,
 built with security as the first concern:
 
-- **No email is ever sent without your explicit approval.** The assistant can only *request* a send. You see the complete
-  message (recipients, subject, full text, warnings) and approve it yourself, either in an approval dialog shown by your
-  MCP client or in your own terminal.
+- **No email is ever sent or forwarded without your explicit approval.** The assistant can only *request* it. You see
+  everything that will go out (recipients, subject, full text or the list of forwarded messages with their attachments,
+  warnings) and approve it yourself, either in an approval dialog shown by your MCP client or in your own terminal.
 - **Built against prompt-injection exfiltration like [CVE-2025-32711 "EchoLeak"](https://msrc.microsoft.com/update-guide/vulnerability/CVE-2025-32711).**
   Email content is treated as untrusted data: hidden text, images, active links and invisible characters are removed or
   defanged before the model sees them. See [SECURITY.md](SECURITY.md) for the threat model.
@@ -19,13 +19,15 @@ built with security as the first concern:
 | `list_accounts` | Configured accounts and their permissions | no |
 | `list_folders` | Folders with message/unread counts | no |
 | `list_messages` | Newest messages in a folder (envelope only) | no |
-| `search_messages` | Server-side search (from, to, subject, text, date range, unread, flagged) | no |
+| `search_messages` | Server-side search (from, to, subject, text, date range, unread, flagged, has attachments, not yet forwarded) | no |
 | `read_message` | One message as sanitised plain text; attachments listed, not returned | no |
 | `create_draft` | Saves a plain-text draft in the Drafts folder | Drafts folder only |
 | `send_email` | Requests sending a plain-text email; **only sent after you approve it** | after approval |
+| `forward_messages` | Requests forwarding existing messages with their original attachments to allow-listed recipients; **only sent after you approve the batch** | after approval |
 
 The server opens folders read-only and fetches with `BODY.PEEK`, so reading never marks messages as read. There are no
-tools to delete, move or flag messages.
+tools to delete or move messages. The only flag the server ever sets is `$Forwarded` on messages you approved for
+forwarding.
 
 ## Requirements
 
@@ -66,6 +68,9 @@ mkdir -p ~/.config/imap-mcp && cp config.example.json ~/.config/imap-mcp/config.
 | `allowSend` | `false` | Allow `send_email` (always with approval). Requires `smtp`. |
 | `allowedRecipients` | any | Optional allow list, e.g. `["*@example.com", "boss@partner.example"]`. Other recipients are rejected before you are even asked. |
 | `maxRecipients` | `10` | Maximum To + Cc + Bcc |
+| `allowForward` | `false` | Allow `forward_messages` (always with approval). Requires `smtp` and `forwardRecipients`. Independent of `allowSend`. |
+| `forwardRecipients` | – | **Mandatory** allow list for forwarding, e.g. `["buha@example.de"]`. Same pattern syntax as `allowedRecipients`. |
+| `markForwarded` | `true` | Set the `$Forwarded` flag on forwarded originals, so they are not forwarded twice |
 | `draftsFolder` / `sentFolder` | auto | Detected via SPECIAL-USE; set them if detection fails |
 | `saveToSent` | `true` | Store a copy of sent mail in the Sent folder |
 
@@ -149,6 +154,35 @@ No tool takes a "confirm" parameter: anything the model can pass, an injected in
 If you want the assistant to prepare emails but never send, leave `allowSend` at `false` and use drafts: you then send
 from your normal mail client.
 
+## Forwarding invoices to an accounting inbox
+
+Typical request: *"Find all emails with invoices from DPD and forward them to my accounting inbox buha@example.de."*
+
+1. Allow forwarding to exactly that address only, and keep free-form sending off if you do not need it:
+
+   ```json
+   "allowSend": false,
+   "allowForward": true,
+   "forwardRecipients": ["buha@example.de"]
+   ```
+
+2. Ask the assistant. It searches (e.g. `from: "dpd"`, `has_attachments: true`, `exclude_forwarded: true`), checks
+   senders, subjects and attachment names, and calls `forward_messages` once with all matching UIDs.
+3. You get **one** approval for the whole batch, listing every message (date, sender, subject, attachment names and
+   sizes), the recipient and the optional note. Approve, and one email per invoice is sent.
+4. The originals are flagged `$Forwarded` (your mail client shows them as forwarded). Next month, the same request with
+   `exclude_forwarded` only picks up new invoices.
+
+Two modes are available:
+
+- `inline` (default): the original text plus the original attachments (e.g. the PDF). Works best with accounting
+  systems that import email attachments (DATEV, Lexoffice, sevDesk, GetMyInvoices, …).
+- `attachment`: the complete original email attached unchanged as `.eml`, for maximum fidelity or when the invoice is
+  in the email body itself.
+
+Even if a malicious email tricks the assistant, forwarded mail can only reach the addresses in `forwardRecipients`, and
+only after you approve it.
+
 ## Running as a service / on a Raspberry Pi
 
 The server is started by the MCP client on demand, so usually no service is needed. To run it on a different
@@ -170,9 +204,15 @@ rejection and prompt-injection cases.
 
 ## Limitations
 
-- Attachments are listed but their content is not returned, and outgoing mail cannot carry attachments.
-- Outgoing mail is plain text only.
+- Attachments are listed but their content is not returned to the model. Emails written by the assistant cannot carry
+  attachments; only forwards carry the original message's attachments.
+- Outgoing mail is plain text only (forwards in `attachment` mode keep the original unchanged).
+- At most 50 messages per forward request.
 - Hidden-text detection covers the common CSS techniques (display, visibility, opacity, font-size, zero height,
   off-screen positioning, `mso-hide`). Text coloured like its background is not detected.
 - Prompt injection cannot be ruled out completely by any tool – see [SECURITY.md](SECURITY.md) for what is guaranteed and
   what is not.
+
+## License
+
+[MIT](LICENSE)

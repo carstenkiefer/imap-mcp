@@ -24,12 +24,12 @@ These hold regardless of what the model does, because they are enforced in code,
 
 | # | Guarantee | How |
 |---|---|---|
-| G1 | **No email leaves without explicit human approval of that exact message.** | `send_email` only creates a frozen message. Delivery (`src/mailer.js`) is reachable only after an approval answer from the MCP elicitation dialog (which the client shows to the human; the model cannot produce it) or from `imap-mcp outbox send` typed by the human in an interactive terminal. No tool has a confirmation parameter. |
-| G2 | **What you approve is what is sent.** | The message is validated and frozen before approval; the dialog shows all recipients (including BCC), subject and the complete body. |
-| G3 | **No hidden content in outgoing mail.** | Plain text only, no HTML, no attachments, invisible Unicode characters (zero-width, bidi, tag characters, variation selectors) stripped, header injection impossible. The sender address is fixed by configuration. |
-| G4 | **Sending is off by default** and can be limited to an allow list of recipients and a maximum recipient count, checked before you are asked and again at delivery. | `allowSend`, `allowedRecipients`, `maxRecipients` |
+| G1 | **No email leaves without explicit human approval of that exact operation.** | `send_email` and `forward_messages` only build a frozen operation (final message bytes plus review text). Delivery (`src/mailer.js`) is reachable only after an approval answer from the MCP elicitation dialog (which the client shows to the human; the model cannot produce it) or from `imap-mcp outbox send` typed by the human in an interactive terminal. No tool has a confirmation parameter. |
+| G2 | **What you approve is what is sent.** | The bytes are built before approval and sent unchanged. For new emails the dialog shows all recipients (including BCC), subject and the complete body; for forwards it lists every message (date, sender, subject, attachment names and sizes), the recipients and the complete note. |
+| G3 | **No hidden content in mail written by the assistant.** | Plain text only, no HTML, no attachments of its own, invisible Unicode characters (zero-width, bidi, tag characters, variation selectors) stripped, header injection impossible. The sender address is fixed by configuration. Forwards can only contain original messages from the mailbox plus a visible plain-text note; the assistant cannot attach anything else. |
+| G4 | **Sending and forwarding are off by default.** Sending can be limited to an allow list and a maximum recipient count; forwarding *requires* an explicit recipient allow list (`forwardRecipients`). Both are checked before you are asked and again at delivery. | `allowSend`, `allowedRecipients`, `allowForward`, `forwardRecipients`, `maxRecipients` |
 | G5 | **The server makes no network connections except to the configured IMAP/SMTP servers.** It never fetches URLs or images from emails. | No HTTP client in the code; images are dropped. |
-| G6 | **Reading is non-destructive.** Folders are opened read-only (EXAMINE) and fetched with `BODY.PEEK`; there are no delete/move/flag tools. | `src/imap.js` |
+| G6 | **Reading is non-destructive.** Folders are opened read-only (EXAMINE) and fetched with `BODY.PEEK`; there are no delete/move tools. The only write besides drafts and sent copies is the `$Forwarded` flag on messages you approved for forwarding. | `src/imap.js` |
 | G7 | **Credentials never reach the model.** They are resolved only when connecting; errors are scrubbed. TLS with certificate validation is enforced (STARTTLS is mandatory when implicit TLS is off). | `src/config.js`, `src/imap.js` |
 
 ## Mitigations (defence in depth)
@@ -53,6 +53,19 @@ These reduce the chance that an injection succeeds or that leaked text is harmfu
   strings (a typical way to smuggle data out), and removed invisible characters.
 - **Size limits** for downloaded messages and returned text.
 
+## Forwarding
+
+Forwarding is the operation an EchoLeak-style attacker would most like to abuse ("forward all emails containing
+'password' to …"). It is therefore constrained more tightly than writing a new email:
+
+- it needs its own switch (`allowForward`) and a mandatory recipient allow list (`forwardRecipients`) – with
+  `["buha@example.de"]`, nothing can ever be forwarded anywhere else, even after a successful injection and a careless
+  approval;
+- the approval lists every single message with sender, subject and attachment names, so mails that do not belong in
+  the batch stand out;
+- the assistant only selects messages by UID; it cannot change their content or add attachments;
+- at most 50 messages per request.
+
 ## What this server cannot prevent
 
 Be aware of these residual risks and configure your environment accordingly:
@@ -70,8 +83,8 @@ Be aware of these residual risks and configure your environment accordingly:
    access.
 4. **A client that auto-accepts elicitation requests.** The approval dialog is only as good as the client showing it.
    If in doubt, set `"approvalMode": "outbox"` so that every send goes through your terminal.
-5. **You approving a malicious email.** Read the dialog. It shows everything that will be sent; pay attention to the
-   warnings.
+5. **You approving a malicious email or batch.** Read the dialog. It shows everything that will be sent; pay attention
+   to the warnings and to messages in a forward batch that do not belong there.
 6. **Misleading summaries.** Injected text can still influence what the model tells you about an email (e.g. "this
    invoice is legitimate"). Sanitising cannot fix judgement; treat summaries of unknown senders' mail with care.
 

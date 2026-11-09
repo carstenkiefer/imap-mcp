@@ -1,24 +1,16 @@
-// SMTP delivery. Only ever called after a human approved the exact message
-// (see approval.js and cli.js) – there is no other code path to it.
+// SMTP delivery. Only ever called after a human approved the exact prepared
+// operation (see approval.js and the CLI) – there is no other code path to it.
 
 import nodemailer from 'nodemailer';
-import { randomBytes } from 'node:crypto';
 import { resolveAuth } from './config.js';
-import { buildRaw, isRecipientAllowed } from './compose.js';
-import { appendSent, safeError } from './imap.js';
+import { assertPolicy } from './compose.js';
+import { appendSent, markForwarded, safeError } from './imap.js';
 
-export async function deliver(account, msg) {
-  if (!account.allowSend || !account.smtp) throw new Error(`Sending is disabled for account "${account.id}"`);
-  // Re-check policy at send time (config may have changed since the message was queued).
-  const all = [...msg.to, ...msg.cc, ...msg.bcc];
-  if (all.length > account.maxRecipients) throw new Error('Too many recipients');
-  const denied = all.filter((r) => !isRecipientAllowed(r.address, account.allowedRecipients));
-  if (denied.length) throw new Error(`Recipients not permitted: ${denied.map((d) => d.address).join(', ')}`);
-
+function transportFor(account) {
   const { smtp } = account;
   const secure = smtp.secure !== false;
   const auth = resolveAuth(smtp.auth);
-  const transport = nodemailer.createTransport({
+  return nodemailer.createTransport({
     host: smtp.host,
     port: smtp.port || (secure ? 465 : 587),
     secure,
@@ -31,31 +23,71 @@ export async function deliver(account, msg) {
     logger: false,
     debug: false,
   });
+}
 
-  const messageId = `<${randomBytes(16).toString('hex')}@${msg.from.address.split('@')[1]}>`;
-  const raw = await buildRaw(msg, { messageId });
-  // Bcc must not appear in the transmitted headers.
-  const rawForSmtp = msg.bcc.length ? await buildRaw({ ...msg, bcc: [] }, { messageId }) : raw;
+/**
+ * Send all items of an approved operation.
+ * @returns {Promise<{results: Array<{label, ok, messageId?, accepted?, rejected?, error?}>, sentFolder: string|null, markedForwarded: number}>}
+ */
+export async function deliverPrepared(account, prepared) {
+  // Re-check policy at send time (the configuration may have changed since approval was requested).
+  for (const item of prepared.items) assertPolicy(account, prepared.kind, item.envelope.to);
 
-  let info;
+  const transport = transportFor(account);
+  const results = [];
+  const sent = [];
   try {
-    info = await transport.sendMail({
-      envelope: { from: msg.from.address, to: all.map((r) => r.address) },
-      raw: rawForSmtp,
-    });
-  } catch (err) {
-    throw new Error(`SMTP delivery failed: ${safeError(err)}`);
+    for (const item of prepared.items) {
+      try {
+        const info = await transport.sendMail({ envelope: item.envelope, raw: item.raw });
+        results.push({ label: item.label, ok: true, messageId: item.messageId, accepted: info.accepted || [], rejected: info.rejected || [] });
+        sent.push(item);
+      } catch (err) {
+        results.push({ label: item.label, ok: false, error: `SMTP delivery failed: ${safeError(err)}` });
+      }
+    }
   } finally {
     transport.close();
   }
 
+  // Best effort follow-ups: delivery already happened.
   let sentFolder = null;
-  if (account.saveToSent) {
+  if (account.saveToSent && sent.length) {
     try {
-      sentFolder = (await appendSent(account, raw)).folder;
+      sentFolder = (await appendSent(account, sent.map((i) => i.sentCopy || i.raw))).folder;
     } catch {
-      /* delivery succeeded; storing a copy is best effort */
+      /* ignore */
     }
   }
-  return { messageId, accepted: info.accepted || [], rejected: info.rejected || [], sentFolder };
+  let markedForwarded = 0;
+  if (account.markForwarded) {
+    const byFolder = new Map();
+    for (const i of sent.filter((i) => i.forwardOf)) {
+      byFolder.set(i.forwardOf.folder, [...(byFolder.get(i.forwardOf.folder) || []), i.forwardOf.uid]);
+    }
+    for (const [folder, uids] of byFolder) {
+      try {
+        await markForwarded(account, folder, uids);
+        markedForwarded += uids.length;
+      } catch {
+        /* server may not allow keywords */
+      }
+    }
+  }
+  return { results, sentFolder, markedForwarded };
+}
+
+export function formatResults({ results, sentFolder, markedForwarded }) {
+  const ok = results.filter((r) => r.ok).length;
+  const lines = [`${ok} of ${results.length} email(s) sent after explicit approval by the user.`];
+  for (const r of results) {
+    lines.push(
+      r.ok
+        ? `  ✔ ${r.label} – ${r.messageId}${r.rejected?.length ? ` (rejected: ${r.rejected.join(', ')})` : ''}`
+        : `  ✘ ${r.label} – ${r.error}`,
+    );
+  }
+  if (sentFolder) lines.push(`Copies saved to: ${sentFolder}`);
+  if (markedForwarded) lines.push(`${markedForwarded} original(s) marked as $Forwarded.`);
+  return lines.join('\n');
 }

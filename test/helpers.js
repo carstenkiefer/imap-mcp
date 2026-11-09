@@ -27,6 +27,33 @@ function mime({ from, to, subject, html, text, replyTo }) {
   return lines.join('\r\n');
 }
 
+/** multipart/mixed message with a PDF attachment, like a carrier invoice. */
+export function invoiceMail({ from, subject, filename, date = 'Tue, 03 Nov 2026 08:00:00 +0000' }) {
+  const pdf = Buffer.from(`%PDF-1.4\n% fake invoice ${filename}\n%%EOF\n`).toString('base64');
+  return [
+    `From: ${from}`,
+    'To: me@example.com',
+    `Subject: ${subject}`,
+    `Date: ${date}`,
+    `Message-ID: <${Math.random().toString(16).slice(2)}@carrier.example>`,
+    'MIME-Version: 1.0',
+    'Content-Type: multipart/mixed; boundary="b1"',
+    '',
+    '--b1',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'Sehr geehrte Damen und Herren, anbei Ihre Rechnung.',
+    '--b1',
+    `Content-Type: application/pdf; name="${filename}"`,
+    `Content-Disposition: attachment; filename="${filename}"`,
+    'Content-Transfer-Encoding: base64',
+    '',
+    pdf,
+    '--b1--',
+    '',
+  ].join('\r\n');
+}
+
 export function startImap(port) {
   const server = hoodiecrow({
     plugins: ['ID', 'SPECIAL-USE', 'UIDPLUS', 'LITERALPLUS', 'ENABLE', 'UNSELECT', 'IDLE'],
@@ -39,6 +66,9 @@ export function startImap(port) {
             raw: mime({ from: 'Mallory <mallory@evil.example>', to: 'me@example.com', subject: 'Quarterly numbers ​\u{E0041}', html: INJECTION_HTML, replyTo: 'other@evil.example' }),
             flags: [],
           },
+          { raw: invoiceMail({ from: 'DPD Rechnungsservice <rechnung@dpd.example>', subject: 'Ihre Rechnung 4711', filename: 'Rechnung_4711.pdf' }), flags: [] },
+          { raw: invoiceMail({ from: 'DPD Rechnungsservice <rechnung@dpd.example>', subject: 'Ihre Rechnung 4712', filename: 'Rechnung_4712.pdf' }), flags: [] },
+          { raw: mime({ from: 'DPD <info@dpd.example>', to: 'me@example.com', subject: 'Ihr Paket kommt heute', text: 'Kein Anhang' }), flags: [] },
         ],
       },
       '': {
@@ -73,7 +103,7 @@ export function startSmtp(port) {
   return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({ server, received })));
 }
 
-export function testConfig({ imapPort, smtpPort, outboxDir, allowSend = true, approvalMode = 'auto', allowedRecipients }) {
+export function testConfig({ imapPort, smtpPort, outboxDir, allowSend = true, approvalMode = 'auto', allowedRecipients, allowForward = true, forwardRecipients = ['buha@example.de'] }) {
   const insecure = { secure: false, allowInsecure: true };
   return {
     accounts: [
@@ -88,6 +118,9 @@ export function testConfig({ imapPort, smtpPort, outboxDir, allowSend = true, ap
         allowedRecipients,
         maxRecipients: 10,
         saveToSent: true,
+        allowForward,
+        forwardRecipients,
+        markForwarded: true,
       },
     ],
     security: { urlMode: 'defang', maxBodyChars: 20000, maxMessageBytes: 1e7, approvalMode, outboxDir, pendingTtlHours: 1 },

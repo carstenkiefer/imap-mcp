@@ -52,7 +52,7 @@ test('tools are listed with read-only annotations', async () => {
   const { client } = await connect();
   const { tools } = await client.listTools();
   const names = tools.map((t) => t.name).sort();
-  assert.deepEqual(names, ['create_draft', 'list_accounts', 'list_folders', 'list_messages', 'read_message', 'search_messages', 'send_email']);
+  assert.deepEqual(names, ['create_draft', 'forward_messages', 'list_accounts', 'list_folders', 'list_messages', 'read_message', 'search_messages', 'send_email']);
   for (const t of tools.filter((t) => /^(list|read|search)_/.test(t.name))) assert.equal(t.annotations.readOnlyHint, true);
   assert.ok(!tools.some((t) => JSON.stringify(t.inputSchema).includes('confirm')), 'no tool may take a confirmation flag');
 });
@@ -104,7 +104,7 @@ test('send_email: explicit approval sends exactly the reviewed mail, BCC hidden'
   const before = smtp.received.length;
   const { call, dialogs } = await connect({}, () => ({ action: 'accept', content: { confirm: true } }));
   const r = await call('send_email', { ...mail, bcc: ['carol@example.com'], reply_to_uid: 1 });
-  assert.match(r.text, /Email sent after explicit approval/, r.text);
+  assert.match(r.text, /1 of 1 email\(s\) sent after explicit approval/, r.text);
   assert.equal(smtp.received.length, before + 1);
   const sent = smtp.received.at(-1);
   assert.deepEqual(sent.envelope.rcptTo.map((x) => x.address).sort(), ['bob@example.com', 'carol@example.com']);
@@ -118,16 +118,17 @@ test('send_email without elicitation support only queues to the outbox', async (
   const before = smtp.received.length;
   const { call } = await connect();
   const r = await call('send_email', mail);
-  assert.match(r.text, /NOT sent/);
+  assert.match(r.text, /Nothing was sent/);
   assert.match(r.text, /imap-mcp outbox send [0-9a-f]{16}/);
   assert.equal(smtp.received.length, before);
   assert.equal(listPending(outboxDir).length, 1);
+  assert.equal(listPending(outboxDir)[0].prepared.items[0].raw.toString().includes('Hello Bob'), true);
 });
 
 test('approvalMode "outbox" never uses the dialog', async () => {
   const { call, dialogs } = await connect({ approvalMode: 'outbox' }, () => ({ action: 'accept', content: { confirm: true } }));
   const r = await call('send_email', mail);
-  assert.match(r.text, /NOT sent/);
+  assert.match(r.text, /Nothing was sent/);
   assert.equal(dialogs.length, 0);
 });
 
@@ -153,4 +154,81 @@ test('create_draft stores a draft and sends nothing', async () => {
   assert.equal(smtp.received.length, before);
   const folders = await call('list_folders', { account: 'test' });
   assert.match(folders.text, /Drafts \[\\Drafts\] – 1 messages/);
+});
+
+test('search finds DPD invoices with attachments and shows file names', async () => {
+  const { call } = await connect();
+  const r = await call('search_messages', { account: 'test', from: 'dpd', has_attachments: true });
+  assert.match(r.text, /2 hit/, r.text);
+  assert.match(r.text, /Attachments: Rechnung_4711\.pdf/);
+  assert.doesNotMatch(r.text, /Ihr Paket kommt heute/);
+});
+
+test('forward_messages: whole batch approved in one dialog, PDFs forwarded, originals marked $Forwarded', async () => {
+  const before = smtp.received.length;
+  const { call, dialogs } = await connect({}, () => ({ action: 'accept', content: { confirm: true } }));
+  const found = await call('search_messages', { account: 'test', from: 'dpd', has_attachments: true, exclude_forwarded: true });
+  const uids = [...found.text.matchAll(/UID (\d+)/g)].map((m) => Number(m[1]));
+  assert.equal(uids.length, 2);
+
+  const r = await call('forward_messages', { account: 'test', uids, to: ['buha@example.de'], note: 'Rechnungen DPD' });
+  assert.match(r.text, /2 of 2 email\(s\) sent/, r.text);
+  assert.match(r.text, /2 original\(s\) marked as \$Forwarded/);
+  assert.equal(dialogs.length, 1);
+  assert.match(dialogs[0], /FORWARD 2 email/);
+  assert.match(dialogs[0], /Rechnung_4711\.pdf/);
+  assert.match(dialogs[0], /Rechnung_4712\.pdf/);
+  assert.match(dialogs[0], /Rechnungen DPD/);
+
+  const sent = smtp.received.slice(before);
+  assert.equal(sent.length, 2);
+  for (const m of sent) {
+    assert.deepEqual(m.envelope.rcptTo.map((x) => x.address), ['buha@example.de']);
+    assert.match(m.raw, /^Subject: Fwd: Ihre Rechnung 471[12]/m);
+    assert.match(m.raw, /filename="?Rechnung_471[12]\.pdf/);
+    assert.match(m.raw, /application\/pdf/);
+  }
+
+  const again = await call('search_messages', { account: 'test', from: 'dpd', has_attachments: true, exclude_forwarded: true });
+  assert.match(again.text, /0 hit/, 'already forwarded invoices must not be found again');
+});
+
+test('forward_messages: declined batch sends nothing and marks nothing', async () => {
+  const before = smtp.received.length;
+  const { call } = await connect({}, () => ({ action: 'cancel' }));
+  const r = await call('forward_messages', { account: 'test', uids: [1], to: ['buha@example.de'] });
+  assert.match(r.text, /did NOT approve/);
+  assert.equal(smtp.received.length, before);
+  const list = await call('list_messages', { account: 'test' });
+  assert.doesNotMatch(list.text, /UID 1 [^\n]*forwarded/);
+});
+
+test('forward_messages: recipients outside forwardRecipients are rejected before any dialog', async () => {
+  const { call, dialogs } = await connect({}, () => ({ action: 'accept', content: { confirm: true } }));
+  for (const to of [['attacker@evil.example'], ['buha@example.de', 'attacker@evil.example'], ['buha@example.de.evil.example']]) {
+    const r = await call('forward_messages', { account: 'test', uids: [3], to });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /not permitted by forwardRecipients/);
+  }
+  assert.equal(dialogs.length, 0);
+});
+
+test('forward_messages: disabled forwarding is rejected', async () => {
+  const { call, dialogs } = await connect({ allowForward: false }, () => ({ action: 'accept', content: { confirm: true } }));
+  const r = await call('forward_messages', { account: 'test', uids: [3], to: ['buha@example.de'] });
+  assert.equal(r.isError, true);
+  assert.match(r.text, /Forwarding is disabled/);
+  assert.equal(dialogs.length, 0);
+});
+
+test('forward_messages: attachment mode attaches the unchanged original; outbox fallback works', async () => {
+  const before = smtp.received.length;
+  const { call } = await connect();
+  const r = await call('forward_messages', { account: 'test', uids: [3], to: ['buha@example.de'], mode: 'attachment' });
+  assert.match(r.text, /Nothing was sent \(forward 1 message/);
+  assert.equal(smtp.received.length, before);
+  const pending = listPending(outboxDir).find((e) => e.prepared.kind === 'forward');
+  const raw = pending.prepared.items[0].raw.toString();
+  assert.match(raw, /message\/rfc822/);
+  assert.match(pending.prepared.review, /Rechnung_4711|Ihre Rechnung 4711/);
 });

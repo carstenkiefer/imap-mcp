@@ -72,16 +72,22 @@ function summarize(msg) {
     subject: env.subject || '',
     flags: [...(msg.flags || [])],
     size: msg.size ?? null,
-    hasAttachments: hasAttachments(msg.bodyStructure),
+    attachments: attachmentNames(msg.bodyStructure),
   };
 }
 
-function hasAttachments(node) {
-  if (!node) return false;
-  if (node.disposition === 'attachment') return true;
-  return (node.childNodes || []).some(hasAttachments);
+/** File names of attachments according to BODYSTRUCTURE (no download needed). */
+function attachmentNames(node, out = []) {
+  if (!node) return out;
+  const filename = node.dispositionParameters?.filename || node.parameters?.name;
+  const isAttachment = node.disposition === 'attachment' || (filename && !/^text\/(plain|html)$/i.test(node.type || ''));
+  if (isAttachment && !(node.childNodes || []).length) out.push(filename || '(unnamed)');
+  for (const child of node.childNodes || []) attachmentNames(child, out);
+  return out;
 }
 
+export const FORWARDED_FLAG = '$Forwarded';
+const ATTACHMENT_SCAN_LIMIT = 500;
 const SUMMARY_QUERY = { uid: true, envelope: true, flags: true, internalDate: true, size: true, bodyStructure: true };
 
 /** Newest messages first. */
@@ -116,15 +122,27 @@ export async function searchMessages(account, { folder = 'INBOX', limit = 20, ..
   if (criteria.before) query.before = new Date(criteria.before);
   if (criteria.unseen === true) query.seen = false;
   if (criteria.flagged === true) query.flagged = true;
+  if (criteria.excludeForwarded === true) query.unKeyword = FORWARDED_FLAG;
   if (!Object.keys(query).length) query.all = true;
 
   return withImap(account, async (client) => {
     const lock = await client.getMailboxLock(folder, { readOnly: true });
     try {
       const uids = ((await client.search(query, { uid: true })) || []).sort((a, b) => b - a);
-      const page = uids.slice(0, limit);
-      const messages = page.length ? await fetchSummaries(client, page) : [];
-      return { folder, total: uids.length, messages };
+      if (!criteria.hasAttachments) {
+        const page = uids.slice(0, limit);
+        const messages = page.length ? await fetchSummaries(client, page) : [];
+        return { folder, total: uids.length, messages };
+      }
+      // IMAP SEARCH cannot filter by attachments: check BODYSTRUCTURE of the newest hits.
+      const scanned = uids.slice(0, ATTACHMENT_SCAN_LIMIT);
+      const withAtt = scanned.length ? (await fetchSummaries(client, scanned)).filter((m) => m.attachments.length) : [];
+      return {
+        folder,
+        total: withAtt.length,
+        messages: withAtt.slice(0, limit),
+        note: uids.length > scanned.length ? `Only the newest ${scanned.length} of ${uids.length} matches were checked for attachments; narrow the search (e.g. with since/before).` : null,
+      };
     } finally {
       lock.release();
     }
@@ -148,6 +166,41 @@ export async function getMessage(account, { folder = 'INBOX', uid, maxBytes }) {
       const full = await client.fetchOne(String(uid), { uid: true, source: true }, { uid: true });
       const parsed = await simpleParser(full.source, { skipImageLinks: true, skipTextToHtml: true, skipTextLinks: true });
       return { uid: meta.uid, flags: [...(meta.flags || [])], parsed };
+    } finally {
+      lock.release();
+    }
+  });
+}
+
+/** Raw RFC 5322 source of several messages (for forwarding). Missing UIDs are reported. */
+export async function getSources(account, { folder = 'INBOX', uids, maxBytes }) {
+  return withImap(account, async (client) => {
+    const lock = await client.getMailboxLock(folder, { readOnly: true });
+    try {
+      const found = new Map();
+      for await (const m of client.fetch(uids.join(','), { uid: true, size: true }, { uid: true })) found.set(m.uid, m.size);
+      const missing = uids.filter((u) => !found.has(u));
+      if (missing.length) throw new Error(`Message UID(s) not found in ${folder}: ${missing.join(', ')}`);
+      const tooBig = uids.filter((u) => found.get(u) > maxBytes);
+      if (tooBig.length) throw new Error(`Message(s) larger than ${maxBytes} bytes: UID ${tooBig.join(', ')}`);
+      const out = [];
+      for (const uid of uids) {
+        const m = await client.fetchOne(String(uid), { uid: true, source: true }, { uid: true });
+        out.push({ uid, source: m.source });
+      }
+      return out;
+    } finally {
+      lock.release();
+    }
+  });
+}
+
+/** Set the standard $Forwarded keyword (shown as "forwarded" by mail clients). */
+export async function markForwarded(account, folder, uids) {
+  return withImap(account, async (client) => {
+    const lock = await client.getMailboxLock(folder);
+    try {
+      await client.messageFlagsAdd(uids.join(','), [FORWARDED_FLAG], { uid: true });
     } finally {
       lock.release();
     }
@@ -189,11 +242,11 @@ export async function appendDraft(account, raw) {
   });
 }
 
-export async function appendSent(account, raw) {
+export async function appendSent(account, raws) {
   return withImap(account, async (client) => {
     const folder = await findSpecialFolder(client, '\\Sent', account.sentFolder, ['sent', 'gesendet', 'sent items', 'gesendete elemente', 'inbox.sent']);
     if (!folder) return { folder: null };
-    await client.append(folder, raw, ['\\Seen']);
+    for (const raw of raws) await client.append(folder, raw, ['\\Seen']);
     return { folder };
   });
 }

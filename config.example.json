@@ -8,19 +8,32 @@
         "host": "imap.example.com",
         "port": 993,
         "secure": true,
-        "auth": { "user": "jane.doe@example.com", "passwordEnv": "WORK_MAIL_PASSWORD" }
+        "auth": {
+          "user": "jane.doe@example.com",
+          "passwordEnv": "WORK_MAIL_PASSWORD"
+        }
       },
       "smtp": {
         "host": "smtp.example.com",
         "port": 465,
         "secure": true,
-        "auth": { "user": "jane.doe@example.com", "passwordEnv": "WORK_MAIL_PASSWORD" }
+        "auth": {
+          "user": "jane.doe@example.com",
+          "passwordEnv": "WORK_MAIL_PASSWORD"
+        }
       },
       "allowDrafts": true,
       "allowSend": false,
-      "allowedRecipients": ["*@example.com"],
+      "allowedRecipients": [
+        "*@example.com"
+      ],
       "maxRecipients": 10,
-      "saveToSent": true
+      "saveToSent": true,
+      "allowForward": true,
+      "forwardRecipients": [
+        "buha@example.de"
+      ],
+      "markForwarded": true
     }
   ],
   "security": {

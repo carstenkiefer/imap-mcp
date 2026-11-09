@@ -37,6 +37,9 @@ const AccountSchema = z.object({
   allowDrafts: z.boolean().default(true),
   allowedRecipients: z.array(z.string().min(1)).optional(), // e.g. ["*@example.com", "chef@partner.de"]
   maxRecipients: z.number().int().positive().max(100).default(10),
+  allowForward: z.boolean().default(false),
+  forwardRecipients: z.array(z.string().min(1)).optional(), // mandatory when allowForward is true
+  markForwarded: z.boolean().default(true), // set $Forwarded on forwarded originals
   draftsFolder: z.string().optional(),
   sentFolder: z.string().optional(),
   saveToSent: z.boolean().default(true),
@@ -92,6 +95,10 @@ export function loadConfig(path = defaultConfigPath()) {
     if (ids.has(acc.id)) throw new Error(`Duplicate account id: ${acc.id}`);
     ids.add(acc.id);
     if (acc.allowSend && !acc.smtp) throw new Error(`Account ${acc.id}: allowSend requires an smtp configuration`);
+    if (acc.allowForward && !acc.smtp) throw new Error(`Account ${acc.id}: allowForward requires an smtp configuration`);
+    if (acc.allowForward && !acc.forwardRecipients?.length) {
+      throw new Error(`Account ${acc.id}: allowForward requires a non-empty forwardRecipients allow list`);
+    }
   }
 
   // Warn (stderr – stdout belongs to the MCP protocol) about readable inline secrets.

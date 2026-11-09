@@ -5,10 +5,9 @@
 import { createInterface } from 'node:readline/promises';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { loadConfig, getAccount, defaultConfigPath } from '../src/config.js';
-import { createServer, VERSION, accountLabel } from '../src/server.js';
+import { createServer, VERSION } from '../src/server.js';
 import { listPending, loadPending, removePending } from '../src/outbox.js';
-import { renderForReview } from '../src/compose.js';
-import { deliver } from '../src/mailer.js';
+import { deliverPrepared, formatResults } from '../src/mailer.js';
 import { withImap } from '../src/imap.js';
 
 const HELP = `imap-mcp ${VERSION}
@@ -52,17 +51,15 @@ async function outbox(sub, id) {
   if (!sub || sub === 'list') {
     const items = listPending(dir);
     if (!items.length) return console.log('No emails waiting for approval.');
-    for (const e of items) {
-      const m = e.message;
-      console.log(`${e.id}  ${e.createdAt}  [${m.accountId}]  to ${m.to.map((r) => r.address).join(', ')}  "${m.subject}"`);
-    }
+    for (const e of items) console.log(`${e.id}  ${e.createdAt}  [${e.prepared.accountId}]  ${e.prepared.summary}`);
     return;
   }
   if (!id) throw new Error('Missing id. See: imap-mcp outbox');
   const entry = loadPending(dir, id);
-  const account = getAccount(config, entry.message.accountId);
+  const { prepared } = entry;
+  const account = getAccount(config, prepared.accountId);
 
-  if (sub === 'show') return console.log(renderForReview(entry.message, accountLabel(account)));
+  if (sub === 'show') return console.log(prepared.review);
   if (sub === 'discard') {
     removePending(dir, id);
     return console.log(`Discarded ${id}.`);
@@ -74,15 +71,16 @@ async function outbox(sub, id) {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error('Approval requires an interactive terminal. Run this command yourself.');
   }
-  console.log('\n' + renderForReview(entry.message, accountLabel(account)) + '\n');
+  console.log(`\n${prepared.intro}\n\n${prepared.review}\n`);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = (await rl.question('Type "send" to send this email exactly as shown, anything else to abort: ')).trim();
+  const answer = (await rl.question('Type "send" to send exactly what is shown above, anything else to abort: ')).trim();
   rl.close();
-  if (answer !== 'send') return console.log('Aborted. Nothing was sent (the email stays in the outbox).');
+  if (answer !== 'send') return console.log('Aborted. Nothing was sent (it stays in the outbox).');
 
-  const res = await deliver(account, entry.message);
+  // Remove first so that an interrupted run can never send the same batch twice.
   removePending(dir, id);
-  console.log(`Sent. Message-ID ${res.messageId}${res.rejected.length ? `, rejected: ${res.rejected.join(', ')}` : ''}`);
+  const res = await deliverPrepared(account, prepared);
+  console.log(formatResults(res));
 }
 
 const [cmd, ...rest] = process.argv.slice(2);

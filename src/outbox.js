@@ -21,13 +21,25 @@ export function newId() {
   return randomBytes(8).toString('hex');
 }
 
-export function savePending(dir, msg, ttlHours) {
+const encodeItem = (i) => ({ ...i, raw: i.raw.toString('base64'), sentCopy: i.sentCopy && i.sentCopy !== i.raw ? i.sentCopy.toString('base64') : null });
+const decodeItem = (i) => {
+  const raw = Buffer.from(i.raw, 'base64');
+  return { ...i, raw, sentCopy: i.sentCopy ? Buffer.from(i.sentCopy, 'base64') : raw };
+};
+
+/** Store a prepared operation (exact bytes + review text) until a human decides. */
+export function savePending(dir, prepared, ttlHours) {
   ensureDir(dir);
   const id = newId();
   const now = Date.now();
-  const entry = { id, createdAt: new Date(now).toISOString(), expiresAt: new Date(now + ttlHours * 3600_000).toISOString(), message: msg };
-  writeFileSync(join(dir, `${id}.json`), JSON.stringify(entry, null, 2), { mode: 0o600, flag: 'wx' });
-  return entry;
+  const entry = {
+    id,
+    createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + ttlHours * 3600_000).toISOString(),
+    prepared: { ...prepared, items: prepared.items.map(encodeItem) },
+  };
+  writeFileSync(join(dir, `${id}.json`), JSON.stringify(entry), { mode: 0o600, flag: 'wx' });
+  return { ...entry, prepared };
 }
 
 export function loadPending(dir, id) {
@@ -42,6 +54,8 @@ export function loadPending(dir, id) {
     removePending(dir, id);
     throw new Error(`Pending message ${id} has expired and was discarded`);
   }
+  if (!entry.prepared?.items) throw new Error(`Pending message ${id} has an unknown format`);
+  entry.prepared.items = entry.prepared.items.map(decodeItem);
   return entry;
 }
 
