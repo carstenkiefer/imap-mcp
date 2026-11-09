@@ -30,7 +30,7 @@ function canElicit(server, config) {
 /**
  * @returns {Promise<{status: 'sent'|'declined'|'pending', text: string}>}
  */
-export async function requestApproval({ server, config, account, prepared }) {
+export async function requestApproval({ server, config, account, prepared, requestId }) {
   let elicitError = null;
 
   if (canElicit(server, config)) {
@@ -56,7 +56,8 @@ export async function requestApproval({ server, config, account, prepared }) {
             required: ['confirm'],
           },
         },
-        { timeout: ELICIT_TIMEOUT_MS },
+        // relatedRequestId routes the dialog over the stream of the running tool call (needed for HTTP clients).
+        { timeout: ELICIT_TIMEOUT_MS, relatedRequestId: requestId },
       );
     } catch (err) {
       elicitError = err.message; // client could not show the dialog -> fall back to the outbox

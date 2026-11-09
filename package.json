@@ -45,7 +45,9 @@
     "config.example.json",
     "README.md",
     "SECURITY.md",
-    "LICENSE"
+    "LICENSE",
+    "Dockerfile",
+    "docker-compose.example.yml"
   ],
   "engines": {
     "node": ">=20"

@@ -66,6 +66,18 @@ Forwarding is the operation an EchoLeak-style attacker would most like to abuse 
 - the assistant only selects messages by UID; it cannot change their content or add attachments;
 - at most 50 messages per request.
 
+## HTTP mode (Open WebUI and other web clients)
+
+- A bearer token of at least 32 characters is mandatory. It is compared in constant time, and requests without a valid
+  token are rejected before any MCP processing.
+- The server listens on `127.0.0.1` by default and sends no CORS headers. Run it on a private Docker network or behind
+  a TLS reverse proxy, never directly on the internet.
+- Request bodies are limited to 1 MB. Sessions are capped at 32 and expire after an hour of inactivity.
+- **Multi-user clients:** everyone who can use the tool in the client can read the configured mailboxes and approve
+  sends from them. In Open WebUI, restrict the connection with Access Control.
+- **Where mail content goes:** the model that Open WebUI uses receives the (sanitised) mail content. If that is a cloud
+  model, mail content leaves your network. Use a local model if this is not acceptable.
+
 ## What this server cannot prevent
 
 Be aware of these residual risks and configure your environment accordingly:

@@ -47,9 +47,9 @@ function fail(err) {
 }
 
 function guarded(fn) {
-  return async (args) => {
+  return async (args, extra) => {
     try {
-      return await fn(args);
+      return await fn(args, extra);
     } catch (err) {
       return fail(err);
     }
@@ -274,14 +274,14 @@ export function createServer(config) {
       inputSchema: composeShape,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    guarded(async (args) => {
+    guarded(async (args, extra) => {
       const acc = getAccount(config, args.account);
       if (!acc.allowSend || !acc.smtp) {
         throw new Error(`Sending is disabled for account "${acc.id}" (allowSend). Use create_draft instead.`);
       }
       const msg = await prepare(acc, args);
       const prepared = await prepareCompose(acc, msg, accountLabel(acc));
-      const res = await requestApproval({ server, config, account: acc, prepared });
+      const res = await requestApproval({ server, config, account: acc, prepared, requestId: extra?.requestId });
       return text(res.text);
     }),
   );
@@ -308,10 +308,10 @@ export function createServer(config) {
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    guarded(async ({ account, folder, uids, to, note, mode }) => {
+    guarded(async ({ account, folder, uids, to, note, mode }, extra) => {
       const acc = getAccount(config, account);
       const prepared = await prepareForward(acc, config, { folder, uids, to, note, mode }, accountLabel(acc));
-      const res = await requestApproval({ server, config, account: acc, prepared });
+      const res = await requestApproval({ server, config, account: acc, prepared, requestId: extra?.requestId });
       return text(res.text);
     }),
   );

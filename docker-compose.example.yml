@@ -1,0 +1,43 @@
+# Example: Open WebUI and imap-mcp on a private Docker network.
+# The MCP port is NOT published to the host; only Open WebUI can reach it.
+#
+#   1. cp config.example.json config.json   (edit it, passwords via env vars)
+#   2. create .env with:
+#        IMAP_MCP_HTTP_TOKEN=<output of: openssl rand -hex 32>
+#        WORK_MAIL_PASSWORD=...
+#   3. docker compose -f docker-compose.example.yml up -d --build
+#   4. In Open WebUI: Admin Settings > External Tools / Integrations > + Add Connection
+#        Type: MCP (Streamable HTTP)
+#        URL:  http://imap-mcp:8808/mcp
+#        Auth: Bearer, Key: the IMAP_MCP_HTTP_TOKEN value
+#      then restrict the connection with Access Control to your own user.
+
+services:
+  imap-mcp:
+    build: .
+    restart: unless-stopped
+    environment:
+      IMAP_MCP_HTTP_TOKEN: ${IMAP_MCP_HTTP_TOKEN}
+      WORK_MAIL_PASSWORD: ${WORK_MAIL_PASSWORD}
+    volumes:
+      - ./config.json:/config/config.json:ro
+      - imap-mcp-data:/data   # outbox for emails waiting for approval in the terminal
+    networks: [mcp]
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    restart: unless-stopped
+    ports:
+      - "3000:8080"
+    environment:
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
+    volumes:
+      - open-webui:/app/backend/data
+    networks: [mcp]
+
+volumes:
+  imap-mcp-data:
+  open-webui:
+
+networks:
+  mcp:

@@ -104,7 +104,7 @@ WORK_MAIL_PASSWORD='…' node bin/imap-mcp.js check
 
 ## Connecting an MCP client
 
-The server speaks MCP over stdio. Example for Claude Desktop (`claude_desktop_config.json`) or any client with the same
+The server speaks MCP over stdio by default (Streamable HTTP for web clients: see [Open WebUI](#open-webui)). Example for Claude Desktop (`claude_desktop_config.json`) or any client with the same
 format:
 
 ```json
@@ -124,6 +124,54 @@ Claude Code:
 ```bash
 claude mcp add imap -e WORK_MAIL_PASSWORD='…' -- node /absolute/path/to/imap-mcp/bin/imap-mcp.js
 ```
+
+## Open WebUI
+
+[Open WebUI](https://docs.openwebui.com/features/mcp) (v0.6.31 or later) connects to MCP servers natively over
+Streamable HTTP, including the approval dialog (MCP elicitation). Run imap-mcp in HTTP mode:
+
+```bash
+export IMAP_MCP_HTTP_TOKEN="$(openssl rand -hex 32)"
+```
+
+```bash
+node bin/imap-mcp.js http --host 127.0.0.1 --port 8808
+```
+
+The endpoint is `http://<host>:8808/mcp`. A bearer token of at least 32 characters is mandatory. The server listens on
+`127.0.0.1` unless told otherwise.
+
+In Open WebUI, go to **Admin Settings → External Tools** (in some versions **Settings → Admin → Integrations**) and add a
+connection:
+
+| Field | Value |
+|---|---|
+| Type | **MCP (Streamable HTTP)** (not OpenAPI) |
+| URL | `http://imap-mcp:8808/mcp` (same Docker network), `http://host.docker.internal:8808/mcp` (Open WebUI in Docker, imap-mcp on the host), or `http://127.0.0.1:8808/mcp` (both on the host) |
+| Auth | **Bearer**, key = the value of `IMAP_MCP_HTTP_TOKEN` |
+
+Then enable the tool in a chat via **+ → Tools**.
+
+**Restrict access.** Use the connection's **Access Control** so that only you (or your group) can use it. Anyone who can
+use the tool can read the configured mailboxes, and the approval dialog for a send or forward is shown to whoever
+triggered it.
+
+**Approvals in Open WebUI.** Open WebUI shows the approval as a form in the chat. The dialog only appears while the chat is
+open in a browser tab, and it is cancelled after 120 seconds. A cancelled or timed-out dialog sends nothing. To approve
+in the terminal instead, set `"approvalMode": "outbox"` and run `imap-mcp outbox send <id>` on the machine running
+imap-mcp. With Docker, use `docker compose exec -it imap-mcp node bin/imap-mcp.js outbox send <id>`.
+
+**Docker.** A multi-arch `Dockerfile` (amd64 and ARM) and [`docker-compose.example.yml`](docker-compose.example.yml) are
+included. The compose example runs imap-mcp and Open WebUI on a private network. The MCP port is not published to the
+host, and the outbox is stored in a volume. If imap-mcp runs on the host and Open WebUI runs in Docker on Linux, bind
+imap-mcp to the Docker bridge address (e.g. `--host 172.17.0.1`) rather than `0.0.0.0`. Start Open WebUI with
+`--add-host=host.docker.internal:host-gateway`.
+
+Never expose the port to the internet. If Open WebUI runs on another machine, put a TLS reverse proxy in front.
+
+**Alternative: mcpo.** Older Open WebUI versions can use the [mcpo](https://github.com/open-webui/mcpo) proxy with the
+stdio server (`mcpo --port 8000 --api-key … -- node bin/imap-mcp.js`, added as an OpenAPI connection). mcpo cannot show
+approval dialogs, so every send or forward goes to the outbox and you approve it in the terminal.
 
 ## Sending email: how approval works
 

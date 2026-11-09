@@ -9,11 +9,16 @@ import { createServer, VERSION } from '../src/server.js';
 import { listPending, loadPending, removePending } from '../src/outbox.js';
 import { deliverPrepared, formatResults } from '../src/mailer.js';
 import { withImap } from '../src/imap.js';
+import { startHttpServer } from '../src/http.js';
 
 const HELP = `imap-mcp ${VERSION}
 
 Usage:
   imap-mcp                       Start the MCP server (stdio)
+  imap-mcp http [options]        Start the MCP server over Streamable HTTP (e.g. for Open WebUI)
+      --host <addr>              Interface to listen on (default 127.0.0.1, env IMAP_MCP_HTTP_HOST)
+      --port <port>              Port (default 8808, env IMAP_MCP_HTTP_PORT)
+                                 The bearer token is read from IMAP_MCP_HTTP_TOKEN (min. 32 characters)
   imap-mcp check                 Test the IMAP login of all configured accounts
   imap-mcp outbox                List emails waiting for approval
   imap-mcp outbox show <id>      Show a waiting email
@@ -27,6 +32,24 @@ async function serve() {
   const server = createServer(config);
   await server.connect(new StdioServerTransport());
   process.stderr.write(`[imap-mcp] ${VERSION} ready, ${config.accounts.length} account(s)\n`);
+}
+
+function option(args, name, fallback) {
+  const i = args.indexOf(name);
+  return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
+}
+
+async function http(args) {
+  const config = loadConfig();
+  const host = option(args, '--host', process.env.IMAP_MCP_HTTP_HOST || '127.0.0.1');
+  const port = Number(option(args, '--port', process.env.IMAP_MCP_HTTP_PORT || 8808));
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid port');
+  const log = (m) => process.stderr.write(`[imap-mcp] ${m}\n`);
+  await startHttpServer(config, { host, port, token: process.env.IMAP_MCP_HTTP_TOKEN, log });
+  log(`${VERSION} listening on http://${host.includes(':') ? `[${host}]` : host}:${port}/mcp, ${config.accounts.length} account(s)`);
+  if (!['127.0.0.1', 'localhost', '::1'].includes(host)) {
+    log('NOTE: listening on a non-loopback interface. Use TLS (reverse proxy) or a private Docker network, never expose this port to the internet.');
+  }
 }
 
 async function check() {
@@ -87,6 +110,7 @@ const [cmd, ...rest] = process.argv.slice(2);
 const run = {
   undefined: serve,
   serve,
+  http: () => http(rest),
   check,
   outbox: () => outbox(...rest),
   help: async () => console.log(HELP),
