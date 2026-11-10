@@ -1,5 +1,7 @@
 # imap-mcp
 
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/G2G4KXS8L)
+
 A small [Model Context Protocol](https://modelcontextprotocol.io) server that lets an AI assistant read your IMAP mailboxes,
 built with security as the first concern:
 
