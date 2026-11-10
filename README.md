@@ -231,11 +231,111 @@ Two modes are available:
 Even if a malicious email tricks the assistant, forwarded mail can only reach the addresses in `forwardRecipients`, and
 only after you approve it.
 
-## Running as a service / on a Raspberry Pi
+## Running as a systemd service
 
-The server is started by the MCP client on demand, so usually no service is needed. To run it on a different
-machine than the client, use any stdio-over-SSH setup, e.g. `"command": "ssh", "args": ["pi@raspberrypi", "node", "/home/pi/imap-mcp/bin/imap-mcp.js"]`.
-The approval dialog still appears in your client; the terminal fallback then runs on the Pi.
+In stdio mode the MCP client starts the server on demand, so no service is needed. For HTTP mode (Open WebUI), a
+hardened systemd unit is provided in [`contrib/systemd/`](contrib/systemd). It runs the server as a dedicated system
+user, without access to home directories, with a read-only file system except for its state directory, and with
+secrets kept out of the configuration file.
+
+| Path | Content | Owner / mode |
+|---|---|---|
+| `/opt/imap-mcp` | Code | root, world-readable |
+| `/etc/imap-mcp/config.json` | Configuration (`passwordEnv` only, no inline passwords) | `root:imap-mcp` 0640 |
+| `/etc/imap-mcp/imap-mcp.env` | `IMAP_MCP_HTTP_TOKEN` and the mail passwords | `root:root` 0600 |
+| `/var/lib/imap-mcp` | Outbox (created by systemd) | `imap-mcp` 0700 |
+
+Node.js must be installed system-wide (distribution package or [NodeSource](https://github.com/nodesource/distributions)).
+A Node installed with `nvm` in a home directory is not visible to the service. Check the path with `command -v node`. If
+it is not `/usr/bin/node`, adjust `ExecStart` in the unit and `NODE` in `imap-mcp-outbox`.
+
+1. Create the service user and install the code:
+
+   ```bash
+   sudo useradd --system --home-dir /var/lib/imap-mcp --shell /usr/sbin/nologin imap-mcp
+   ```
+
+   ```bash
+   sudo git clone https://github.com/carstenkiefer/imap-mcp.git /opt/imap-mcp
+   ```
+
+   ```bash
+   cd /opt/imap-mcp && sudo npm ci --omit=dev
+   ```
+
+2. Install configuration and secrets:
+
+   ```bash
+   sudo install -d -m 0750 -o root -g imap-mcp /etc/imap-mcp
+   ```
+
+   ```bash
+   sudo install -m 0640 -o root -g imap-mcp /opt/imap-mcp/config.example.json /etc/imap-mcp/config.json
+   ```
+
+   ```bash
+   sudo install -m 0600 -o root -g root /opt/imap-mcp/contrib/systemd/imap-mcp.env.example /etc/imap-mcp/imap-mcp.env
+   ```
+
+   Edit both files (`sudoedit /etc/imap-mcp/config.json`, `sudoedit /etc/imap-mcp/imap-mcp.env`). Set the token to the
+   output of `openssl rand -hex 32`. Every `passwordEnv` name in the configuration needs a line in the env file.
+
+3. Install and start the service:
+
+   ```bash
+   sudo install -m 0644 /opt/imap-mcp/contrib/systemd/imap-mcp.service /etc/systemd/system/
+   ```
+
+   ```bash
+   sudo install -m 0755 /opt/imap-mcp/contrib/systemd/imap-mcp-outbox /usr/local/bin/
+   ```
+
+   ```bash
+   sudo systemctl daemon-reload && sudo systemctl enable --now imap-mcp
+   ```
+
+4. Check it:
+
+   ```bash
+   systemctl status imap-mcp
+   ```
+
+   ```bash
+   curl http://127.0.0.1:8808/health
+   ```
+
+   ```bash
+   journalctl -u imap-mcp -f
+   ```
+
+Then add `http://127.0.0.1:8808/mcp` in Open WebUI as described in [Open WebUI](#open-webui).
+
+**Approving in the terminal.** `imap-mcp-outbox` runs the outbox commands as the service user, with the service's
+configuration and secrets:
+
+```bash
+imap-mcp-outbox
+```
+
+```bash
+imap-mcp-outbox send <id>
+```
+
+**Updating:**
+
+```bash
+cd /opt/imap-mcp && sudo git pull && sudo npm ci --omit=dev && sudo systemctl restart imap-mcp
+```
+
+**If the service does not start**, `journalctl -u imap-mcp` shows the reason. A missing token or password is reported
+there by name. If a hardening option conflicts with your system, put an override in
+`sudo systemctl edit imap-mcp` instead of changing the unit file.
+
+### Running on another machine via SSH (stdio)
+
+To use stdio mode on a different machine than the client, use any stdio-over-SSH setup, e.g.
+`"command": "ssh", "args": ["pi@raspberrypi", "node", "/home/pi/imap-mcp/bin/imap-mcp.js"]`. The approval dialog still
+appears in your client. The terminal fallback then runs on the Pi.
 
 ## Development
 

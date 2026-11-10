@@ -1,0 +1,68 @@
+# systemd unit for imap-mcp in HTTP mode (e.g. for Open WebUI on the same machine).
+#
+# Layout:
+#   /opt/imap-mcp                code (git clone + npm ci --omit=dev)
+#   /etc/imap-mcp/config.json    configuration (root:imap-mcp, 0640)
+#   /etc/imap-mcp/imap-mcp.env   secrets: token + mail passwords (root:root, 0600)
+#   /var/lib/imap-mcp            state, e.g. the outbox (created by systemd)
+#
+# Install: see README.md, section "Running as a systemd service".
+
+[Unit]
+Description=imap-mcp – MCP server for IMAP mailboxes (Streamable HTTP)
+Documentation=https://github.com/carstenkiefer/imap-mcp
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=imap-mcp
+Group=imap-mcp
+WorkingDirectory=/opt/imap-mcp
+# Node must be installed system-wide (distribution package or NodeSource),
+# not via nvm in a home directory: ProtectHome below hides home directories.
+ExecStart=/usr/bin/node /opt/imap-mcp/bin/imap-mcp.js http
+Restart=on-failure
+RestartSec=5s
+
+Environment=NODE_ENV=production
+Environment=IMAP_MCP_CONFIG=/etc/imap-mcp/config.json
+# The outbox lives in $XDG_STATE_HOME/imap-mcp = /var/lib/imap-mcp
+Environment=XDG_STATE_HOME=/var/lib
+Environment=IMAP_MCP_HTTP_HOST=127.0.0.1
+Environment=IMAP_MCP_HTTP_PORT=8808
+# Secrets (IMAP_MCP_HTTP_TOKEN, mail passwords). Values here override the defaults above.
+EnvironmentFile=/etc/imap-mcp/imap-mcp.env
+
+StateDirectory=imap-mcp
+StateDirectoryMode=0700
+UMask=0077
+
+# Hardening. MemoryDenyWriteExecute is deliberately not set: Node's JIT needs it.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# Deny with an error instead of killing the process, should a library need an unexpected call.
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
