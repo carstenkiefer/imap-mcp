@@ -1,6 +1,6 @@
-<img src="docs/logo.png" alt="imap-mcp logo" width="160" align="right">
+<img src="docs/logo.png" alt="imap-mcp logo" width="96" align="right">
 
-# imap-mcp
+# imap-mcp<br>Secure MCP server for IMAP mailboxes
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/G2G4KXS8L)
 
