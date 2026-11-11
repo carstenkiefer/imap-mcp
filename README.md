@@ -1,3 +1,5 @@
+<img src="docs/logo.png" alt="imap-mcp logo" width="160" align="right">
+
 # imap-mcp
 
 A small [Model Context Protocol](https://modelcontextprotocol.io) server that lets an AI assistant read your IMAP mailboxes,
