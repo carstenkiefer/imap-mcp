@@ -47,7 +47,8 @@
     "SECURITY.md",
     "LICENSE",
     "Dockerfile",
-    "docker-compose.example.yml"
+    "docker-compose.example.yml",
+    "contrib"
   ],
   "engines": {
     "node": ">=20"

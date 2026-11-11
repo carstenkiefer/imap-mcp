@@ -1,0 +1,22 @@
+#!/bin/sh
+# Review and approve emails waiting in the outbox of the imap-mcp service.
+#
+#   imap-mcp-outbox                 list waiting emails
+#   imap-mcp-outbox show <id>       show one
+#   imap-mcp-outbox send <id>       review and send (asks you to type "send")
+#   imap-mcp-outbox discard <id>    discard
+#
+# Runs the CLI as the service user with the service's configuration and
+# secrets, inside a pseudo terminal so the interactive confirmation works.
+# Secrets are never placed on a command line. Requires sudo.
+set -eu
+
+NODE="${NODE:-/usr/bin/node}"
+
+exec sudo systemd-run --quiet --pty --collect \
+  --uid=imap-mcp --gid=imap-mcp \
+  --working-directory=/opt/imap-mcp \
+  --property=EnvironmentFile=/etc/imap-mcp/imap-mcp.env \
+  --setenv=IMAP_MCP_CONFIG=/etc/imap-mcp/config.json \
+  --setenv=XDG_STATE_HOME=/var/lib \
+  "$NODE" /opt/imap-mcp/bin/imap-mcp.js outbox "$@"
